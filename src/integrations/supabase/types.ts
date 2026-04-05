@@ -14,7 +14,170 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      clips: {
+        Row: {
+          created_at: string
+          file_url: string
+          id: string
+          title: string | null
+        }
+        Insert: {
+          created_at?: string
+          file_url: string
+          id?: string
+          title?: string | null
+        }
+        Update: {
+          created_at?: string
+          file_url?: string
+          id?: string
+          title?: string | null
+        }
+        Relationships: []
+      }
+      commentaries: {
+        Row: {
+          clip_id: string
+          commentary_text: string | null
+          created_at: string
+          id: string
+          model_name: string | null
+        }
+        Insert: {
+          clip_id: string
+          commentary_text?: string | null
+          created_at?: string
+          id?: string
+          model_name?: string | null
+        }
+        Update: {
+          clip_id?: string
+          commentary_text?: string | null
+          created_at?: string
+          id?: string
+          model_name?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "commentaries_clip_id_fkey"
+            columns: ["clip_id"]
+            isOneToOne: false
+            referencedRelation: "clips"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      detections: {
+        Row: {
+          clip_id: string
+          confidence: number | null
+          created_at: string
+          event_type: string | null
+          id: string
+          player_name: string | null
+          team_name: string | null
+          visual_summary: string | null
+        }
+        Insert: {
+          clip_id: string
+          confidence?: number | null
+          created_at?: string
+          event_type?: string | null
+          id?: string
+          player_name?: string | null
+          team_name?: string | null
+          visual_summary?: string | null
+        }
+        Update: {
+          clip_id?: string
+          confidence?: number | null
+          created_at?: string
+          event_type?: string | null
+          id?: string
+          player_name?: string | null
+          team_name?: string | null
+          visual_summary?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "detections_clip_id_fkey"
+            columns: ["clip_id"]
+            isOneToOne: false
+            referencedRelation: "clips"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      evaluations: {
+        Row: {
+          clip_id: string
+          created_at: string
+          factual_score: number | null
+          fluency_score: number | null
+          id: string
+          notes: string | null
+          style_score: number | null
+        }
+        Insert: {
+          clip_id: string
+          created_at?: string
+          factual_score?: number | null
+          fluency_score?: number | null
+          id?: string
+          notes?: string | null
+          style_score?: number | null
+        }
+        Update: {
+          clip_id?: string
+          created_at?: string
+          factual_score?: number | null
+          fluency_score?: number | null
+          id?: string
+          notes?: string | null
+          style_score?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "evaluations_clip_id_fkey"
+            columns: ["clip_id"]
+            isOneToOne: false
+            referencedRelation: "clips"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      retrieved_context: {
+        Row: {
+          clip_id: string
+          created_at: string
+          id: string
+          player_stats_json: Json | null
+          team_stats_json: Json | null
+        }
+        Insert: {
+          clip_id: string
+          created_at?: string
+          id?: string
+          player_stats_json?: Json | null
+          team_stats_json?: Json | null
+        }
+        Update: {
+          clip_id?: string
+          created_at?: string
+          id?: string
+          player_stats_json?: Json | null
+          team_stats_json?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "retrieved_context_clip_id_fkey"
+            columns: ["clip_id"]
+            isOneToOne: false
+            referencedRelation: "clips"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
