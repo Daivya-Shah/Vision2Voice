@@ -3,19 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import UploadZone from "@/components/UploadZone";
 import ProcessingStatus, { type ProcessingStep } from "@/components/ProcessingStatus";
 import ResultsPanel from "@/components/ResultsPanel";
-
-interface AnalysisResult {
-  event_type: string;
-  player_name: string;
-  team_name: string;
-  confidence: number;
-  visual_summary: string;
-  retrieved_context?: {
-    player_stats?: Record<string, any>;
-    team_stats?: Record<string, any>;
-  };
-  commentary_text: string;
-}
+import { runAnalysisPipeline, type AnalysisResult } from "@/lib/analysis";
 
 const Index = () => {
   const [step, setStep] = useState<ProcessingStep | null>(null);
@@ -65,17 +53,9 @@ const Index = () => {
       await delay(600);
       setStep("generating");
 
-      // 4. Call edge function
-      const { data, error: fnError } = await supabase.functions.invoke(
-        "process-video",
-        {
-          body: { clip_id: clip.id, file_url: publicUrl },
-        }
-      );
-
-      if (fnError) throw new Error(fnError.message);
-
-      setResult(data as AnalysisResult);
+      // 4. Edge Function or direct FastAPI (see VITE_BACKEND_URL)
+      const payload = await runAnalysisPipeline(clip.id, publicUrl);
+      setResult(payload);
       setStep("complete");
     } catch (err: any) {
       setError(err.message || "Something went wrong");
@@ -87,14 +67,8 @@ const Index = () => {
     if (!clipId || !fileUrl) return;
     setIsRegenerating(true);
     try {
-      const { data, error: fnError } = await supabase.functions.invoke(
-        "process-video",
-        {
-          body: { clip_id: clipId, file_url: fileUrl, action: "regenerate" },
-        }
-      );
-      if (fnError) throw fnError;
-      setResult(data as AnalysisResult);
+      const payload = await runAnalysisPipeline(clipId, fileUrl, "regenerate");
+      setResult(payload);
     } catch {
       // keep existing result
     } finally {

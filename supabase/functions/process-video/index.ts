@@ -55,21 +55,23 @@ Deno.serve(async (req) => {
           "And Curry pulls up from DEEP! The two-time MVP rises over the defense, and BANG! Nothing but net! That's his fifth triple of the night, and he's now shooting 42% from beyond the arc this season. The Warriors lead stretches to 12 with that dagger!",
       };
 
-      // Save results to database
-      await supabase.from("detections").insert({
-        clip_id,
-        event_type: mockResult.event_type,
-        player_name: mockResult.player_name,
-        team_name: mockResult.team_name,
-        confidence: mockResult.confidence,
-        visual_summary: mockResult.visual_summary,
-      });
+      // Save results to database (regenerate only adds a new commentary row)
+      if (action !== "regenerate") {
+        await supabase.from("detections").insert({
+          clip_id,
+          event_type: mockResult.event_type,
+          player_name: mockResult.player_name,
+          team_name: mockResult.team_name,
+          confidence: mockResult.confidence,
+          visual_summary: mockResult.visual_summary,
+        });
 
-      await supabase.from("retrieved_context").insert({
-        clip_id,
-        player_stats_json: mockResult.retrieved_context.player_stats,
-        team_stats_json: mockResult.retrieved_context.team_stats,
-      });
+        await supabase.from("retrieved_context").insert({
+          clip_id,
+          player_stats_json: mockResult.retrieved_context.player_stats,
+          team_stats_json: mockResult.retrieved_context.team_stats,
+        });
+      }
 
       await supabase.from("commentaries").insert({
         clip_id,

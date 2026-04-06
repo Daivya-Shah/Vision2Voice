@@ -1,21 +1,26 @@
-import { Copy, RefreshCw, Save, Star } from "lucide-react";
-import { useState } from "react";
+import { Copy, Download, Loader2, Mic, RefreshCw, Save, Star } from "lucide-react";
+import { useEffect, useState, type SyntheticEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
-interface AnalysisResult {
-  event_type: string;
-  player_name: string;
-  team_name: string;
-  confidence: number;
-  visual_summary: string;
-  retrieved_context?: {
-    player_stats?: Record<string, any>;
-    team_stats?: Record<string, any>;
-  };
-  commentary_text: string;
+import {
+  exportCommentaryVideo,
+  getBackendBaseUrl,
+  type AnalysisResult,
+  type PossessionSegment,
+} from "@/lib/analysis";
+
+function activeSegmentIndex(segs: PossessionSegment[], normalizedT: number): number {
+  const x = Math.min(1, Math.max(0, normalizedT));
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    const end = i === segs.length - 1 ? 1 + 1e-6 : s.t1;
+    if (x >= s.t0 && x < end) return i;
+  }
+  return Math.max(0, segs.length - 1);
 }
 
 interface ResultsPanelProps {
@@ -79,6 +84,77 @@ const ResultsPanel = ({
   const [style, setStyle] = useState(0);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const [voiceoverUrl, setVoiceoverUrl] = useState<string | null>(null);
+  const [voiceoverBusy, setVoiceoverBusy] = useState(false);
+  const [videoTab, setVideoTab] = useState<"original" | "voiceover">("original");
+  const [playheadNorm, setPlayheadNorm] = useState(0);
+
+  const backendUrl = getBackendBaseUrl();
+  const timeline = result.possession_timeline;
+  const segIdx =
+    timeline && timeline.length > 0 ? activeSegmentIndex(timeline, playheadNorm) : -1;
+  const seg = segIdx >= 0 && timeline ? timeline[segIdx] : null;
+  const displayEvent = seg?.event_type ?? result.event_type;
+  const displayPlayer = seg?.player_name ?? result.player_name;
+  const displayTeam = seg?.team_name ?? result.team_name;
+  const liveLine =
+    segIdx >= 0 && result.segment_commentary_lines && result.segment_commentary_lines[segIdx]
+      ? result.segment_commentary_lines[segIdx]
+      : null;
+
+  const onVideoTime = (e: SyntheticEvent<HTMLVideoElement>) => {
+    const v = e.currentTarget;
+    const d = v.duration;
+    if (d && Number.isFinite(d) && d > 0) {
+      setPlayheadNorm(v.currentTime / d);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (voiceoverUrl) URL.revokeObjectURL(voiceoverUrl);
+    };
+  }, [voiceoverUrl]);
+
+  useEffect(() => {
+    setVoiceoverUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setVideoTab("original");
+    setPlayheadNorm(0);
+  }, [fileUrl, result.commentary_text, result.possession_timeline, result.segment_commentary_lines]);
+
+  const handleBuildVoiceover = async () => {
+    if (!backendUrl) {
+      toast.error("Add VITE_BACKEND_URL in .env and restart the dev server.");
+      return;
+    }
+    setVoiceoverBusy(true);
+    try {
+      const blob = await exportCommentaryVideo(fileUrl, result.commentary_text, {
+        possession_timeline: result.possession_timeline,
+        segment_commentary_lines: result.segment_commentary_lines,
+      });
+      const url = URL.createObjectURL(blob);
+      if (voiceoverUrl) URL.revokeObjectURL(voiceoverUrl);
+      setVoiceoverUrl(url);
+      setVideoTab("voiceover");
+      toast.success("Voiceover video ready — switch to the Voiceover tab to play or download.");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Voiceover export failed");
+    } finally {
+      setVoiceoverBusy(false);
+    }
+  };
+
+  const handleDownloadVoiceover = () => {
+    if (!voiceoverUrl) return;
+    const a = document.createElement("a");
+    a.href = voiceoverUrl;
+    a.download = `vision2voice-voiceover-${clipId.slice(0, 8)}.mp4`;
+    a.click();
+  };
 
   const handleCopy = () => {
     navigator.clipboard.writeText(result.commentary_text);
@@ -88,13 +164,14 @@ const ResultsPanel = ({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await supabase.from("evaluations").insert({
+      const { error } = await supabase.from("evaluations").insert({
         clip_id: clipId,
         fluency_score: fluency,
         factual_score: factual,
         style_score: style,
         notes: notes || null,
       });
+      if (error) throw error;
       toast.success("Evaluation saved");
     } catch {
       toast.error("Failed to save evaluation");
@@ -108,29 +185,104 @@ const ResultsPanel = ({
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 py-8">
-      {/* Video Player */}
-      <div className="overflow-hidden rounded-2xl border border-border bg-card">
-        <video
-          src={fileUrl}
-          controls
-          className="w-full"
-          style={{ maxHeight: "480px" }}
-        />
+      {/* Video: original vs AI voiceover */}
+      <div className="glass-card overflow-hidden rounded-2xl border border-border bg-card">
+        <Tabs value={videoTab} onValueChange={(v) => setVideoTab(v as "original" | "voiceover")}>
+          <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <TabsList className="grid w-full max-w-md grid-cols-2 bg-secondary/50">
+              <TabsTrigger value="original">Original clip</TabsTrigger>
+              <TabsTrigger value="voiceover" disabled={!voiceoverUrl}>
+                With AI voiceover
+              </TabsTrigger>
+            </TabsList>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={voiceoverBusy || !backendUrl}
+                onClick={handleBuildVoiceover}
+                className="border border-border"
+                title={
+                  backendUrl
+                    ? "Synthesize speech and mux onto the video (uses OpenAI TTS on the server)"
+                    : "Set VITE_BACKEND_URL for voiceover"
+                }
+              >
+                {voiceoverBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Mic className="mr-2 h-4 w-4" />
+                )}
+                {voiceoverBusy ? "Building…" : "Build voiceover video"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!voiceoverUrl}
+                onClick={handleDownloadVoiceover}
+                className="border-border"
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Download MP4
+              </Button>
+            </div>
+          </div>
+          {!backendUrl && (
+            <p className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+              Voiceover needs the Python API: set <code className="text-foreground">VITE_BACKEND_URL</code> and run{" "}
+              <code className="text-foreground">npm run dev:full</code>.
+            </p>
+          )}
+          <TabsContent value="original" className="m-0 focus-visible:outline-none">
+            <video
+              key={fileUrl}
+              src={fileUrl}
+              controls
+              playsInline
+              className="w-full"
+              style={{ maxHeight: "480px" }}
+              onTimeUpdate={onVideoTime}
+              onSeeked={onVideoTime}
+              onLoadedMetadata={onVideoTime}
+            />
+          </TabsContent>
+          <TabsContent value="voiceover" className="m-0 focus-visible:outline-none">
+            {voiceoverUrl ? (
+              <video
+                key={voiceoverUrl}
+                src={voiceoverUrl}
+                controls
+                playsInline
+                className="w-full"
+                style={{ maxHeight: "480px" }}
+                onTimeUpdate={onVideoTime}
+                onSeeked={onVideoTime}
+                onLoadedMetadata={onVideoTime}
+              />
+            ) : (
+              <div className="flex min-h-[200px] items-center justify-center px-4 py-8 text-center text-sm text-muted-foreground">
+                Click &quot;Build voiceover video&quot; to generate an MP4 with AI narration.
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
 
-      {/* Detection Info */}
+      {/* Detection Info — updates with playhead when possession timeline exists */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="glass-card rounded-xl p-4">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Event</p>
-          <p className="font-display text-xl font-bold text-foreground">{result.event_type}</p>
+          <p className="font-display text-xl font-bold text-foreground">{displayEvent}</p>
         </div>
         <div className="glass-card rounded-xl p-4">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Player</p>
-          <p className="font-display text-xl font-bold text-foreground">{result.player_name}</p>
+          <p className="font-display text-xl font-bold text-foreground">{displayPlayer}</p>
         </div>
         <div className="glass-card rounded-xl p-4">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Team</p>
-          <p className="font-display text-xl font-bold text-foreground">{result.team_name}</p>
+          <p className="font-display text-xl font-bold text-foreground">{displayTeam}</p>
         </div>
         <div className="glass-card rounded-xl p-4">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Confidence</p>
@@ -217,6 +369,12 @@ const ResultsPanel = ({
         <p className="text-base leading-relaxed text-foreground/95 italic">
           "{result.commentary_text}"
         </p>
+        {liveLine && (
+          <p className="mt-3 border-t border-border pt-3 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">At this point in the clip: </span>
+            {liveLine}
+          </p>
+        )}
       </div>
 
       {/* Rating & Save */}
