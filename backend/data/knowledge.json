@@ -1,0 +1,85 @@
+{
+  "players": [
+    {
+      "aliases": ["stephen curry", "curry", "steph curry"],
+      "display_name": "Stephen Curry",
+      "season_avg_ppg": 26.4,
+      "three_pt_pct": 0.405,
+      "games_played": 70,
+      "career_threes": 3747,
+      "last_5_games_avg": 28.1,
+      "notes": "Elite shooter; high off-ball movement"
+    },
+    {
+      "aliases": ["lebron james", "lebron", "james"],
+      "display_name": "LeBron James",
+      "season_avg_ppg": 25.2,
+      "three_pt_pct": 0.371,
+      "games_played": 71,
+      "career_points": 40000,
+      "last_5_games_avg": 24.0,
+      "notes": "Primary playmaker forward"
+    },
+    {
+      "aliases": ["giannis antetokounmpo", "giannis", "antetokounmpo"],
+      "display_name": "Giannis Antetokounmpo",
+      "season_avg_ppg": 30.4,
+      "three_pt_pct": 0.274,
+      "games_played": 73,
+      "last_5_games_avg": 32.0,
+      "notes": "Dominant rim pressure"
+    },
+    {
+      "aliases": ["nikola jokic", "jokic", "the joker"],
+      "display_name": "Nikola Jokić",
+      "season_avg_ppg": 26.4,
+      "assists_per_game": 9.0,
+      "games_played": 79,
+      "last_5_games_avg": 27.5,
+      "notes": "Center playmaker"
+    },
+    {
+      "aliases": ["luka doncic", "luka", "doncic"],
+      "display_name": "Luka Dončić",
+      "season_avg_ppg": 33.9,
+      "three_pt_pct": 0.381,
+      "games_played": 70,
+      "last_5_games_avg": 35.2,
+      "notes": "High usage creator"
+    }
+  ],
+  "teams": [
+    {
+      "aliases": ["warriors", "golden state", "golden state warriors", "gsw"],
+      "display_name": "Golden State Warriors",
+      "win_loss": "46-36",
+      "conference_rank": 10,
+      "offensive_rating": 115.2,
+      "three_pt_team_pct": 0.378
+    },
+    {
+      "aliases": ["lakers", "los angeles lakers", "la lakers"],
+      "display_name": "Los Angeles Lakers",
+      "win_loss": "47-35",
+      "conference_rank": 8,
+      "offensive_rating": 114.1,
+      "three_pt_team_pct": 0.365
+    },
+    {
+      "aliases": ["celtics", "boston", "boston celtics"],
+      "display_name": "Boston Celtics",
+      "win_loss": "61-21",
+      "conference_rank": 1,
+      "offensive_rating": 118.5,
+      "three_pt_team_pct": 0.388
+    },
+    {
+      "aliases": ["nuggets", "denver", "denver nuggets"],
+      "display_name": "Denver Nuggets",
+      "win_loss": "57-25",
+      "conference_rank": 2,
+      "offensive_rating": 117.0,
+      "three_pt_team_pct": 0.371
+    }
+  ]
+}

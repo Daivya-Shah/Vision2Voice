@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.27.0
+opencv-python-headless>=4.10.0
+openai>=1.55.0
+pydantic>=2.10.0
+python-dotenv>=1.0.0
+imageio-ffmpeg>=0.5.1
+nba_api>=1.4.1
