@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import UploadZone from "@/components/UploadZone";
 import ProcessingStatus, { type ProcessingStep } from "@/components/ProcessingStatus";
@@ -57,8 +58,8 @@ const Index = () => {
       const payload = await runAnalysisPipeline(clip.id, publicUrl);
       setResult(payload);
       setStep("complete");
-    } catch (err: any) {
-      setError(err.message || "Something went wrong");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
       setStep("error");
     }
   }, []);
@@ -88,6 +89,12 @@ const Index = () => {
         <p className="mt-2 text-sm text-muted-foreground">
           Upload a basketball clip · Get instant AI commentary
         </p>
+        <Link
+          to="/live"
+          className="mt-4 inline-flex rounded-full border border-primary/40 bg-primary/10 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/15"
+        >
+          Open Live Replay Desk
+        </Link>
       </header>
 
       {/* Upload Zone */}

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,11 +19,12 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from jersey_resolve import enrich_timeline_segments, enrich_vision_with_nba_rosters
+from live_sessions import LiveSessionConfig, LiveSessionManager
 from openai_retry import with_openai_retry
 from timeline import (
     commentary_lines_for_timeline,
@@ -80,6 +82,24 @@ class VoiceoverExportBody(BaseModel):
     commentary_text: str = ""
     possession_timeline: list[dict[str, Any]] | None = None
     segment_commentary_lines: list[str] | None = None
+
+
+class LiveSessionRequest(BaseModel):
+    file_url: str
+    nba_game_id: str
+    start_period: int = Field(default=1, ge=1, le=10)
+    start_clock: str = "12:00"
+    cadence_sec: float = Field(default=3.0, ge=1.0, le=10.0)
+    window_sec: float = Field(default=6.0, ge=2.0, le=20.0)
+    replay_speed: float = Field(default=1.0, ge=0.25, le=8.0)
+
+
+class LiveSessionResponse(BaseModel):
+    session_id: str
+    status: str
+    team_names: list[str] = Field(default_factory=list)
+    event_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
 
 
 def _unlink_temp(path: str) -> None:
@@ -490,6 +510,79 @@ async def persist_to_supabase(
         logger.warning("Supabase persist failed (results still returned): %s", e)
 
 
+async def persist_live_event_to_supabase(session_id: str, event: dict[str, Any]) -> None:
+    """Persist compact live session/caption review data when Supabase service keys exist."""
+    base = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not base or not key:
+        return
+
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    event_type = event.get("type")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if event_type == "session_ready":
+                await client.post(
+                    f"{base}/rest/v1/live_sessions",
+                    headers=headers,
+                    json={
+                        "id": session_id,
+                        "file_url": event.get("file_url"),
+                        "nba_game_id": event.get("game_id"),
+                        "start_period": event.get("start_period"),
+                        "start_clock": event.get("start_clock"),
+                        "cadence_sec": event.get("cadence_sec"),
+                        "window_sec": event.get("window_sec"),
+                        "status": event.get("status"),
+                        "warnings_json": event.get("warnings") or [],
+                    },
+                )
+            elif event_type == "caption":
+                await client.post(
+                    f"{base}/rest/v1/live_captions",
+                    headers=headers,
+                    json={
+                        "session_id": session_id,
+                        "event_id": event.get("event_id"),
+                        "period": event.get("period"),
+                        "game_clock": event.get("clock"),
+                        "event_type": event.get("event_type"),
+                        "player_name": event.get("player_name"),
+                        "team_name": event.get("team_name"),
+                        "score": event.get("score"),
+                        "caption_text": event.get("text"),
+                        "source": event.get("source"),
+                        "confidence": event.get("confidence"),
+                        "latency_ms": event.get("latency_ms"),
+                        "model_name": event.get("model_name"),
+                        "feed_description": event.get("feed_description"),
+                        "visual_summary": event.get("visual_summary"),
+                        "feed_context_json": event.get("feed_context"),
+                    },
+                )
+            elif event_type in {"status", "complete", "stopped", "error"}:
+                status = event.get("status") or event_type
+                payload: dict[str, Any] = {"status": status}
+                if event_type in {"complete", "stopped", "error"}:
+                    payload["ended_at"] = datetime.now(timezone.utc).isoformat()
+                await client.patch(
+                    f"{base}/rest/v1/live_sessions",
+                    params={"id": f"eq.{session_id}"},
+                    headers=headers,
+                    json=payload,
+                )
+    except Exception as e:
+        logger.warning("Live Supabase persist failed: %s", e)
+
+
+live_sessions = LiveSessionManager(event_sink=persist_live_event_to_supabase)
+
+
 async def run_analyze(clip_id: str, file_url: str, commentary_temp: float) -> AnalysisResult:
     path = await download_video(file_url)
     try:
@@ -552,6 +645,55 @@ async def run_analyze(clip_id: str, file_url: str, commentary_temp: float) -> An
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/live/sessions", response_model=LiveSessionResponse)
+async def create_live_session(body: LiveSessionRequest) -> LiveSessionResponse:
+    try:
+        session = await live_sessions.create_session(
+            LiveSessionConfig(
+                file_url=body.file_url,
+                nba_game_id=body.nba_game_id,
+                start_period=body.start_period,
+                start_clock=body.start_clock,
+                cadence_sec=body.cadence_sec,
+                window_sec=body.window_sec,
+                replay_speed=body.replay_speed,
+            )
+        )
+        return LiveSessionResponse(
+            session_id=session.session_id,
+            status=session.status,
+            team_names=session.kb.team_names,
+            event_count=len(session.events),
+            warnings=session.kb.warnings,
+        )
+    except Exception as e:
+        logger.exception("Live session creation failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/live/sessions/{session_id}/events")
+async def live_session_events(session_id: str) -> StreamingResponse:
+    if not live_sessions.get_session(session_id):
+        raise HTTPException(status_code=404, detail="Live session not found")
+    return StreamingResponse(
+        live_sessions.event_stream(session_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/live/sessions/{session_id}/stop")
+async def stop_live_session(session_id: str) -> dict[str, str]:
+    stopped = await live_sessions.stop_session(session_id)
+    if not stopped:
+        raise HTTPException(status_code=404, detail="Live session not found")
+    return {"status": "stopping"}
 
 
 @app.post("/export-commentary-video")

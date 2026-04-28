@@ -146,6 +146,119 @@ export type Database = {
           },
         ]
       }
+      live_captions: {
+        Row: {
+          caption_text: string
+          confidence: number | null
+          created_at: string
+          event_id: string | null
+          event_type: string | null
+          feed_context_json: Json | null
+          feed_description: string | null
+          game_clock: string | null
+          id: string
+          latency_ms: number | null
+          model_name: string | null
+          period: number | null
+          player_name: string | null
+          score: string | null
+          session_id: string
+          source: string
+          team_name: string | null
+          visual_summary: string | null
+        }
+        Insert: {
+          caption_text: string
+          confidence?: number | null
+          created_at?: string
+          event_id?: string | null
+          event_type?: string | null
+          feed_context_json?: Json | null
+          feed_description?: string | null
+          game_clock?: string | null
+          id?: string
+          latency_ms?: number | null
+          model_name?: string | null
+          period?: number | null
+          player_name?: string | null
+          score?: string | null
+          session_id: string
+          source: string
+          team_name?: string | null
+          visual_summary?: string | null
+        }
+        Update: {
+          caption_text?: string
+          confidence?: number | null
+          created_at?: string
+          event_id?: string | null
+          event_type?: string | null
+          feed_context_json?: Json | null
+          feed_description?: string | null
+          game_clock?: string | null
+          id?: string
+          latency_ms?: number | null
+          model_name?: string | null
+          period?: number | null
+          player_name?: string | null
+          score?: string | null
+          session_id?: string
+          source?: string
+          team_name?: string | null
+          visual_summary?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "live_captions_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "live_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      live_sessions: {
+        Row: {
+          cadence_sec: number
+          created_at: string
+          ended_at: string | null
+          file_url: string
+          id: string
+          nba_game_id: string
+          start_clock: string
+          start_period: number
+          status: string
+          warnings_json: Json
+          window_sec: number
+        }
+        Insert: {
+          cadence_sec?: number
+          created_at?: string
+          ended_at?: string | null
+          file_url: string
+          id?: string
+          nba_game_id: string
+          start_clock: string
+          start_period: number
+          status?: string
+          warnings_json?: Json
+          window_sec?: number
+        }
+        Update: {
+          cadence_sec?: number
+          created_at?: string
+          ended_at?: string | null
+          file_url?: string
+          id?: string
+          nba_game_id?: string
+          start_clock?: string
+          start_period?: number
+          status?: string
+          warnings_json?: Json
+          window_sec?: number
+        }
+        Relationships: []
+      }
       retrieved_context: {
         Row: {
           clip_id: string

@@ -195,6 +195,15 @@ npm run dev:backend  # API only (expects backend/.venv)
 | `POST` | `/analyze` | Body: `{ "clip_id", "file_url" }` — full pipeline |
 | `POST` | `/regenerate` | Uses latest stored detection from Supabase when available; otherwise re-analyzes |
 | `POST` | `/export-commentary-video` | Body: `file_url`, `commentary_text`, optional `possession_timeline` + `segment_commentary_lines` for segment-aligned audio |
+| `POST` | `/live/sessions` | Starts a simulated-live replay session from a video URL + NBA game id + start clock |
+| `GET` | `/live/sessions/{session_id}/events` | Server-Sent Events stream for live status, ticks, captions, warnings, and completion |
+| `POST` | `/live/sessions/{session_id}/stop` | Stops an active live replay session |
+
+## Live Replay pipeline
+
+The **Live Replay Desk** is available at `/live` when `VITE_BACKEND_URL` points at the Python API. It treats a prerecorded video as a live source, aligns replay time to an NBA game id / period / clock, loads rosters and play-by-play with `nba_api`, builds an in-memory pregame knowledge packet, and streams text captions over SSE.
+
+V1 defaults to 3-second chunks and a 6-second rolling window. Structured play-by-play is treated as the source of truth; vision is used as gated visual evidence or cautious `vision_only` fallback commentary. Live review metadata can be persisted to the `live_sessions` and `live_captions` tables when backend Supabase service credentials are configured.
 
 ---
 

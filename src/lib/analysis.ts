@@ -90,7 +90,7 @@ async function analyzeEdge(
 }
 
 /** True when frontend should call Python directly (same machine / LAN). */
-export function useDirectBackend(): boolean {
+export function hasDirectBackend(): boolean {
   return Boolean(import.meta.env.VITE_BACKEND_URL?.trim());
 }
 
@@ -99,7 +99,7 @@ export async function runAnalysisPipeline(
   fileUrl: string,
   action?: "regenerate"
 ): Promise<AnalysisResult> {
-  if (useDirectBackend()) {
+  if (hasDirectBackend()) {
     return analyzeDirect(clipId, fileUrl, action);
   }
   return analyzeEdge(clipId, fileUrl, action);
