@@ -6,24 +6,28 @@ Vision2Voice analysis API: download clip → frame sampling → vision (OpenAI o
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import logging
 import os
 import re
 import tempfile
+import uuid
 from datetime import datetime, timezone
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from jersey_resolve import enrich_timeline_segments, enrich_vision_with_nba_rosters
+from live_game_data import nba_team_options, search_nba_games
 from live_sessions import LiveSessionConfig, LiveSessionManager
 from openai_retry import with_openai_retry
 from timeline import (
@@ -92,6 +96,13 @@ class LiveSessionRequest(BaseModel):
     cadence_sec: float = Field(default=3.0, ge=1.0, le=10.0)
     window_sec: float = Field(default=6.0, ge=2.0, le=20.0)
     replay_speed: float = Field(default=1.0, ge=0.25, le=8.0)
+    clock_mode: str = "replay_media"
+
+
+class LivePlaybackControlRequest(BaseModel):
+    state: str = Field(pattern="^(playing|paused)$")
+    replay_time_sec: float = Field(default=0.0, ge=0.0)
+    playback_rate: float = Field(default=1.0, ge=0.1, le=8.0)
 
 
 class LiveSessionResponse(BaseModel):
@@ -100,6 +111,36 @@ class LiveSessionResponse(BaseModel):
     team_names: list[str] = Field(default_factory=list)
     event_count: int = 0
     warnings: list[str] = Field(default_factory=list)
+
+
+class LiveUploadResponse(BaseModel):
+    upload_id: str
+    file_url: str
+    filename: str
+    size_bytes: int
+
+
+class LiveTeamOptionResponse(BaseModel):
+    team_id: str
+    name: str
+    abbreviation: str | None = None
+    city: str | None = None
+
+
+class LiveGameSearchResultResponse(BaseModel):
+    game_id: str
+    game_date: str
+    season: str
+    season_type: str
+    matchup: str
+    team_abbreviation: str
+    opponent_abbreviation: str
+    home_team: str | None = None
+    away_team: str | None = None
+    team_score: int | None = None
+    opponent_score: int | None = None
+    score: str | None = None
+    result: str | None = None
 
 
 def _unlink_temp(path: str) -> None:
@@ -647,6 +688,83 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/live/uploads", response_model=LiveUploadResponse)
+async def upload_live_replay(request: Request, filename: str = "replay.mp4") -> LiveUploadResponse:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".mp4", ".mov", ".m4v", ".webm"}:
+        suffix = ".mp4"
+    upload_id = uuid.uuid4().hex
+    upload_dir = Path(tempfile.gettempdir()) / "vision2voice-live-uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    out_path = upload_dir / f"{upload_id}{suffix}"
+    size = 0
+    try:
+        with out_path.open("wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                out.write(chunk)
+    except Exception:
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        raise
+    if size == 0:
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail="Uploaded replay file is empty.")
+    return LiveUploadResponse(
+        upload_id=upload_id,
+        file_url=str(request.url_for("get_live_replay_upload", upload_id=upload_id)),
+        filename=filename,
+        size_bytes=size,
+    )
+
+
+@app.get("/live/uploads/{upload_id}")
+async def get_live_replay_upload(upload_id: str) -> FileResponse:
+    if not re.fullmatch(r"[a-f0-9]{32}", upload_id):
+        raise HTTPException(status_code=404, detail="Upload not found")
+    upload_dir = Path(tempfile.gettempdir()) / "vision2voice-live-uploads"
+    matches = list(upload_dir.glob(f"{upload_id}.*"))
+    if not matches:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    return FileResponse(matches[0], media_type="video/mp4", filename=matches[0].name)
+
+
+@app.get("/live/teams", response_model=list[LiveTeamOptionResponse])
+async def live_teams() -> list[LiveTeamOptionResponse]:
+    return [LiveTeamOptionResponse(**asdict(team)) for team in nba_team_options()]
+
+
+@app.get("/live/games/search", response_model=list[LiveGameSearchResultResponse])
+async def search_live_games(
+    team: str,
+    opponent: str,
+    season: str,
+    season_type: str = "Regular Season",
+    limit: int = 20,
+) -> list[LiveGameSearchResultResponse]:
+    try:
+        capped_limit = max(1, min(limit, 50))
+        results = await asyncio.to_thread(
+            search_nba_games,
+            team=team,
+            opponent=opponent,
+            season=season,
+            season_type=season_type,
+            limit=capped_limit,
+        )
+        return [LiveGameSearchResultResponse(**asdict(result)) for result in results]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Live game search failed")
+        raise HTTPException(status_code=502, detail=f"NBA game search failed: {exc}") from exc
+
+
 @app.post("/live/sessions", response_model=LiveSessionResponse)
 async def create_live_session(body: LiveSessionRequest) -> LiveSessionResponse:
     try:
@@ -659,6 +777,7 @@ async def create_live_session(body: LiveSessionRequest) -> LiveSessionResponse:
                 cadence_sec=body.cadence_sec,
                 window_sec=body.window_sec,
                 replay_speed=body.replay_speed,
+                clock_mode=body.clock_mode,
             )
         )
         return LiveSessionResponse(
@@ -686,6 +805,22 @@ async def live_session_events(session_id: str) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/live/sessions/{session_id}/playback")
+async def control_live_session_playback(
+    session_id: str,
+    body: LivePlaybackControlRequest,
+) -> dict[str, str]:
+    updated = await live_sessions.control_playback(
+        session_id,
+        state=body.state,
+        replay_time_sec=body.replay_time_sec,
+        playback_rate=body.playback_rate,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Live session not found")
+    return {"status": body.state}
 
 
 @app.post("/live/sessions/{session_id}/stop")

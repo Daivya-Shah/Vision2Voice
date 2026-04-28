@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 logger = logging.getLogger("vision2voice.live.game_data")
 
@@ -52,6 +52,23 @@ class LiveGamePackage:
     players: list[LivePlayer] = field(default_factory=list)
     events: list[LiveGameEvent] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class LiveGameSearchResult:
+    game_id: str
+    game_date: str
+    season: str
+    season_type: str
+    matchup: str
+    team_abbreviation: str
+    opponent_abbreviation: str
+    home_team: str | None
+    away_team: str | None
+    team_score: int | None
+    opponent_score: int | None
+    score: str | None
+    result: str | None
 
 
 class GameDataProvider(Protocol):
@@ -200,6 +217,126 @@ def _score_from_v3(row: Any) -> str | None:
     if home and away:
         return f"{away}-{home}"
     return None
+
+
+def nba_team_options() -> list[LiveTeam]:
+    from nba_api.stats.static import teams as nba_teams
+
+    return [
+        LiveTeam(
+            team_id=str(team["id"]),
+            name=str(team["full_name"]),
+            abbreviation=str(team["abbreviation"]),
+            city=str(team["city"]),
+        )
+        for team in nba_teams.get_teams()
+    ]
+
+
+def resolve_nba_team(query: str) -> LiveTeam | None:
+    needle = normalize_team_query(query)
+    if not needle:
+        return None
+    for team in nba_team_options():
+        candidates = {
+            normalize_team_query(team.team_id),
+            normalize_team_query(team.name),
+            normalize_team_query(team.abbreviation or ""),
+            normalize_team_query(team.city or ""),
+            normalize_team_query((team.name or "").split()[-1]),
+        }
+        if needle in candidates:
+            return team
+    for team in nba_team_options():
+        haystack = normalize_team_query(" ".join([team.name, team.abbreviation or "", team.city or ""]))
+        if needle in haystack:
+            return team
+    return None
+
+
+def normalize_team_query(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def search_nba_games(
+    *,
+    team: str,
+    opponent: str,
+    season: str,
+    season_type: str,
+    limit: int = 20,
+) -> list[LiveGameSearchResult]:
+    team_info = resolve_nba_team(team)
+    opponent_info = resolve_nba_team(opponent)
+    if not team_info:
+        raise ValueError(f"Unknown NBA team: {team}")
+    if not opponent_info:
+        raise ValueError(f"Unknown NBA team: {opponent}")
+    if team_info.team_id == opponent_info.team_id:
+        raise ValueError("Choose two different NBA teams.")
+    if not re.fullmatch(r"\d{4}-\d{2}", season):
+        raise ValueError("Season must use NBA format like 2023-24.")
+    if season_type not in {"Regular Season", "Playoffs"}:
+        raise ValueError("Season type must be Regular Season or Playoffs.")
+
+    from nba_api.stats.endpoints import leaguegamefinder
+
+    finder = leaguegamefinder.LeagueGameFinder(
+        player_or_team_abbreviation="T",
+        team_id_nullable=team_info.team_id,
+        vs_team_id_nullable=opponent_info.team_id,
+        season_nullable=season,
+        season_type_nullable=season_type,
+        timeout=30,
+    )
+    df = finder.get_data_frames()[0]
+    results: list[LiveGameSearchResult] = []
+    seen: set[str] = set()
+    for _, row in df.sort_values("GAME_DATE", ascending=False).iterrows():
+        game_id = str(row.get("GAME_ID") or "").strip()
+        if not game_id or game_id in seen:
+            continue
+        seen.add(game_id)
+        matchup = str(row.get("MATCHUP") or "").strip()
+        team_abbr = str(row.get("TEAM_ABBREVIATION") or team_info.abbreviation or "").strip()
+        opponent_abbr = opponent_info.abbreviation or ""
+        home_abbr, away_abbr = matchup_home_away(matchup, team_abbr, opponent_abbr)
+        team_score = int(row["PTS"]) if row.get("PTS") == row.get("PTS") else None
+        plus_minus = row.get("PLUS_MINUS")
+        opponent_score = None
+        if team_score is not None and plus_minus == plus_minus:
+            opponent_score = int(team_score - float(plus_minus))
+        score = None
+        if team_score is not None and opponent_score is not None:
+            score = f"{team_score}-{opponent_score}"
+        results.append(
+            LiveGameSearchResult(
+                game_id=game_id,
+                game_date=str(row.get("GAME_DATE") or "").strip(),
+                season=season,
+                season_type=season_type,
+                matchup=matchup,
+                team_abbreviation=team_abbr,
+                opponent_abbreviation=opponent_abbr,
+                home_team=home_abbr,
+                away_team=away_abbr,
+                team_score=team_score,
+                opponent_score=opponent_score,
+                score=score,
+                result=str(row.get("WL") or "").strip() or None,
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def matchup_home_away(matchup: str, team_abbr: str, opponent_abbr: str) -> tuple[str | None, str | None]:
+    if " vs. " in matchup:
+        return team_abbr, opponent_abbr
+    if " @ " in matchup:
+        return opponent_abbr, team_abbr
+    return None, None
 
 
 class NBAApiGameDataProvider:

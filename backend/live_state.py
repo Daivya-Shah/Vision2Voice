@@ -17,6 +17,13 @@ class VisualObservation:
     summary: str
     confidence: float
     changed: bool = False
+    action_level: str = "medium"
+
+    def __post_init__(self) -> None:
+        level = (self.action_level or "").strip().lower()
+        if level not in {"high", "medium", "low"}:
+            level = "medium" if self.changed else "low"
+        self.action_level = level
 
 
 @dataclass(slots=True)
@@ -34,8 +41,6 @@ class FeedContext:
             parts.append(f"score {self.last_score}")
         if self.nearest_prior:
             parts.append(f"previous: {self.nearest_prior.description}")
-        if self.nearest_next:
-            parts.append(f"next: {self.nearest_next.description}")
         return " | ".join(parts)
 
 
@@ -195,10 +200,15 @@ async def generate_caption_text(
         "pregame_facts": facts,
         "recent_captions": recent_captions[-3:],
         "visual_evidence": visual.summary if visual else None,
+        "visual_action_level": visual.action_level if visual else None,
     }
     prompt = (
         "Write exactly one concise live NBA caption, 10-22 words.\n"
-        "Structured play-by-play is the source of truth. Do not invent stats, score, player names, or outcomes.\n"
+        "Structured play-by-play is the source of truth for names, score, and outcomes. "
+        "Do not invent stats, score, player names, or outcomes.\n"
+        "When visual_evidence exists, make the caption descriptive about the player's movement, ball movement, "
+        "spacing, defensive coverage, or the visible basketball action.\n"
+        "Do not write a generic line that only restates the feed description when visual_evidence adds gameplay detail.\n"
         "Use one pregame fact only if it naturally fits. Avoid repeating recent captions.\n\n"
         f"Data:\n{json.dumps(payload, indent=2)}\n\n"
         "Return plain text only."
@@ -230,6 +240,7 @@ async def generate_context_caption_text(
         "pregame_facts": kb.facts_for(None, context_team_name(context)),
         "recent_captions": recent_captions[-3:],
         "visual_evidence": visual.summary,
+        "visual_action_level": visual.action_level,
     }
     if not os.getenv("OPENAI_API_KEY"):
         return template_context_caption(context, visual), "template-live-context"
@@ -240,9 +251,12 @@ async def generate_context_caption_text(
         "Write exactly one concise live NBA caption, 10-22 words.\n"
         "Every caption must be grounded in feed_context. Use the current game clock, teams, or score when useful.\n"
         "This payload has no exact play-by-play event for the current video window.\n"
+        "No future play-by-play is provided. Do not predict or hint at upcoming outcomes.\n"
         "Do not state a specific player, scoring result, rebound, turnover, foul, assist, or made/missed shot "
         "unless it appears in an exact matched event. Here there is no exact matched event.\n"
-        "You may describe the visual action cautiously and relate it to nearest prior/next feed context.\n"
+        "If visual_action_level is high or medium, describe only the visible current gameplay and already elapsed context.\n"
+        "If visual_action_level is low, write analysis instead: spacing, pace, shot-clock pressure, matchup positioning, "
+        "current score/time context, or tactical setup already visible.\n"
         "Avoid starting with 'Visually,' unless there is no natural feed-aware wording.\n\n"
         f"Data:\n{json.dumps(payload, indent=2)}\n\n"
         "Return plain text only."
@@ -274,10 +288,11 @@ def template_caption(
     else:
         base = f"{desc}."
     facts = kb.facts_for(event.player_name, event.team_name, limit=1)
-    if facts and len(base.split()) < 17:
+    if visual and visual.summary and visual.action_level in {"high", "medium"} and len(base.split()) < 20:
+        movement = visual.summary.strip().rstrip(".")
+        base = f"{base} {movement}."
+    elif facts and len(base.split()) < 17:
         base = f"{base} {facts[0]}"
-    if visual and visual.summary and len(base.split()) < 18:
-        base = f"{base} {visual.summary}"
     return " ".join(base.split()[:28])
 
 
@@ -285,14 +300,17 @@ def template_context_caption(context: FeedContext, visual: VisualObservation) ->
     teams = " vs. ".join(context.team_names[:2]) or "the teams"
     score = f" with the score at {context.last_score}" if context.last_score else ""
     summary = visual.summary.strip().rstrip(".") or "the possession develops"
-    return f"At Q{context.period} {context.clock}{score}, {teams} reset as {summary}."
+    if visual.action_level == "low":
+        setup = "settle into spacing and tempo"
+        if context.nearest_prior:
+            setup = "organize after the previous action"
+        return f"At Q{context.period} {context.clock}{score}, {teams} {setup}, reading the current matchups."
+    return f"At Q{context.period} {context.clock}{score}, {teams} flow through the possession as {summary}."
 
 
 def context_team_name(context: FeedContext) -> str | None:
     if context.nearest_prior and context.nearest_prior.team_name:
         return context.nearest_prior.team_name
-    if context.nearest_next and context.nearest_next.team_name:
-        return context.nearest_next.team_name
     return context.team_names[0] if context.team_names else None
 
 
@@ -303,7 +321,6 @@ def feed_context_to_payload(context: FeedContext) -> dict[str, Any]:
         "teams": context.team_names,
         "last_score": context.last_score,
         "nearest_prior_event": event_to_payload(context.nearest_prior),
-        "nearest_next_event": event_to_payload(context.nearest_next),
     }
 
 

@@ -37,6 +37,7 @@ class LiveSessionConfig:
     cadence_sec: float = 3.0
     window_sec: float = 6.0
     replay_speed: float = 1.0
+    clock_mode: str = "replay_media"
 
 
 @dataclass
@@ -52,6 +53,10 @@ class LiveSession:
     replay_task: asyncio.Task[None] | None = None
     started_at: float | None = None
     ended_at: float | None = None
+    duration_sec: float | None = None
+    replay_elapsed: float = 0.0
+    playback_rate: float = 1.0
+    playback_condition: asyncio.Condition = field(default_factory=asyncio.Condition)
 
 
 class LiveSessionManager:
@@ -88,6 +93,9 @@ class LiveSessionManager:
                 "start_clock": config.start_clock,
                 "cadence_sec": config.cadence_sec,
                 "window_sec": config.window_sec,
+                "clock_mode": config.clock_mode,
+                "replay_time_sec": session.replay_elapsed,
+                "playback_rate": session.playback_rate,
                 "team_names": kb.team_names,
                 "event_count": len(package.events),
                 "warnings": kb.warnings,
@@ -104,7 +112,52 @@ class LiveSessionManager:
             return False
         session.stopped = True
         session.status = "stopping"
+        async with session.playback_condition:
+            session.playback_condition.notify_all()
         await self._broadcast(session, {"type": "status", "session_id": session_id, "status": "stopping"})
+        return True
+
+    async def control_playback(
+        self,
+        session_id: str,
+        *,
+        state: str,
+        replay_time_sec: float,
+        playback_rate: float,
+    ) -> bool:
+        session = self.sessions.get(session_id)
+        if not session:
+            return False
+        if session.status in {"stopping", "stopped", "complete", "error"}:
+            return True
+
+        rate = min(8.0, max(0.1, float(playback_rate or 1.0)))
+        replay_elapsed = max(0.0, float(replay_time_sec or 0.0))
+        if session.duration_sec is not None:
+            replay_elapsed = min(session.duration_sec, replay_elapsed)
+
+        session.replay_elapsed = replay_elapsed
+        session.playback_rate = rate
+        session.status = "running" if state == "playing" else "paused"
+        if state == "playing":
+            session.started_at = time.time() - (replay_elapsed / rate)
+
+        async with session.playback_condition:
+            session.playback_condition.notify_all()
+
+        await self._broadcast(
+            session,
+            {
+                "type": "status",
+                "session_id": session_id,
+                "status": session.status,
+                "replay_time_sec": session.replay_elapsed,
+                "duration_sec": session.duration_sec,
+                "playback_rate": session.playback_rate,
+                "clock_mode": session.config.clock_mode,
+            },
+        )
+        await self._emit_tick(session)
         return True
 
     async def event_stream(self, session_id: str) -> AsyncIterator[str]:
@@ -137,35 +190,34 @@ class LiveSessionManager:
 
     async def _run_replay(self, session: LiveSession) -> None:
         config = session.config
-        session.status = "running"
-        session.started_at = time.time()
-        await self._broadcast(
-            session,
-            {
-                "type": "status",
-                "session_id": session.session_id,
-                "status": "running",
-                "cadence_sec": config.cadence_sec,
-                "window_sec": config.window_sec,
-            },
-        )
         video_path = ""
         try:
             video_path = await _download_video_temp(config.file_url)
             duration = await asyncio.to_thread(_video_duration_sec, video_path)
+            session.duration_sec = duration
             reconciler = LiveStateReconciler(session.kb)
             start_abs = game_elapsed_sec(config.start_period, config.start_clock)
-            replay_elapsed = 0.0
             previous_signature: str | None = None
+            await self._emit_tick(session)
 
-            while replay_elapsed < duration and not session.stopped:
-                sleep_for = config.cadence_sec / max(0.1, config.replay_speed)
+            while session.replay_elapsed < duration and not session.stopped:
+                async with session.playback_condition:
+                    await session.playback_condition.wait_for(
+                        lambda: session.stopped or session.status == "running"
+                    )
+                if session.stopped:
+                    break
+
+                sleep_for = config.cadence_sec / max(0.1, session.playback_rate)
                 await asyncio.sleep(sleep_for)
-                replay_elapsed = min(duration, replay_elapsed + config.cadence_sec)
+                if session.stopped or session.status != "running":
+                    continue
+
+                session.replay_elapsed = min(duration, session.replay_elapsed + config.cadence_sec)
                 period, clock, game_abs = align_replay_time(
                     config.start_period,
                     config.start_clock,
-                    replay_elapsed,
+                    session.replay_elapsed,
                 )
                 window_start_abs = max(start_abs, game_abs - config.window_sec)
                 matching_events = [
@@ -183,8 +235,8 @@ class LiveSessionManager:
                 )
                 visual = await self._visual_observation(
                     video_path,
-                    max(0.0, replay_elapsed - config.window_sec),
-                    replay_elapsed,
+                    max(0.0, session.replay_elapsed - config.window_sec),
+                    session.replay_elapsed,
                     previous_signature=previous_signature,
                     force=bool(feed_events),
                 )
@@ -194,34 +246,24 @@ class LiveSessionManager:
                     for event in feed_events:
                         decision = await reconciler.caption_for_feed_event(
                             event,
-                            replay_time_sec=replay_elapsed,
+                            replay_time_sec=session.replay_elapsed,
                             visual=visual,
                         )
-                        decision.latency_ms = _latency_ms(session.started_at, decision.replay_time_sec, config.replay_speed)
+                        decision.latency_ms = _latency_ms(session.started_at, decision.replay_time_sec, session.playback_rate)
                         await self._emit_caption(session, decision)
                 else:
                     decision = await reconciler.caption_for_feed_context(
                         period=period,
                         clock=clock,
-                        replay_time_sec=replay_elapsed,
+                        replay_time_sec=session.replay_elapsed,
                         visual=visual,
                         context=feed_context,
                     )
                     if decision:
-                        decision.latency_ms = _latency_ms(session.started_at, decision.replay_time_sec, config.replay_speed)
+                        decision.latency_ms = _latency_ms(session.started_at, decision.replay_time_sec, session.playback_rate)
                         await self._emit_caption(session, decision)
 
-                await self._broadcast(
-                    session,
-                    {
-                        "type": "tick",
-                        "session_id": session.session_id,
-                        "replay_time_sec": replay_elapsed,
-                        "duration_sec": duration,
-                        "period": period,
-                        "clock": clock,
-                    },
-                )
+                await self._emit_tick(session)
 
             session.ended_at = time.time()
             session.status = "stopped" if session.stopped else "complete"
@@ -262,17 +304,26 @@ class LiveSessionManager:
             return None
         if not os.getenv("OPENAI_API_KEY") or os.getenv("LIVE_VISION_ENABLED", "1").lower() in {"0", "false", "no"}:
             summary = "players move through the possession as the defense reacts."
+            action_level = "medium"
             if changed:
                 summary = "the action changes pace with movement around the ball."
-            return VisualObservation(summary=summary, confidence=0.42, changed=changed)
+            else:
+                summary = "players hold their spacing while the possession resets."
+                action_level = "low"
+            return VisualObservation(summary=summary, confidence=0.42, changed=changed, action_level=action_level)
         # Keep v1 latency predictable: the expensive live vision call is intentionally tiny.
         try:
-            summary, confidence = await live_vision_summary(video_path, t0, t1)
+            summary, confidence, action_level = await live_vision_summary(video_path, t0, t1)
             changed = changed or (summary != previous_signature)
-            return VisualObservation(summary=summary, confidence=confidence, changed=changed)
+            return VisualObservation(summary=summary, confidence=confidence, changed=changed, action_level=action_level)
         except Exception as exc:
             logger.warning("Live vision summary failed: %s", exc)
-            return VisualObservation(summary=signature or "visual context unavailable.", confidence=0.3, changed=changed)
+            return VisualObservation(
+                summary=signature or "visual context unavailable.",
+                confidence=0.3,
+                changed=changed,
+                action_level="medium" if changed else "low",
+            )
 
     async def _emit_caption(self, session: LiveSession, decision: CaptionDecision) -> None:
         await self._broadcast(
@@ -281,6 +332,26 @@ class LiveSessionManager:
                 "type": "caption",
                 "session_id": session.session_id,
                 **asdict(decision),
+            },
+        )
+
+    async def _emit_tick(self, session: LiveSession) -> None:
+        period, clock, _ = align_replay_time(
+            session.config.start_period,
+            session.config.start_clock,
+            session.replay_elapsed,
+        )
+        await self._broadcast(
+            session,
+            {
+                "type": "tick",
+                "session_id": session.session_id,
+                "replay_time_sec": session.replay_elapsed,
+                "duration_sec": session.duration_sec or 0,
+                "period": period,
+                "clock": clock,
+                "playback_rate": session.playback_rate,
+                "clock_mode": session.config.clock_mode,
             },
         )
 
@@ -344,7 +415,7 @@ def _frame_change_signature(video_path: str, t0: float, t1: float) -> tuple[str,
         cap.release()
 
 
-async def live_vision_summary(video_path: str, t0: float, t1: float) -> tuple[str, float]:
+async def live_vision_summary(video_path: str, t0: float, t1: float) -> tuple[str, float, str]:
     import base64
     import cv2
     from openai import AsyncOpenAI
@@ -363,15 +434,20 @@ async def live_vision_summary(video_path: str, t0: float, t1: float) -> tuple[st
     finally:
         cap.release()
     if not frames:
-        return "visual context unavailable.", 0.2
+        return "visual context unavailable.", 0.2, "low"
 
     content: list[dict[str, Any]] = [
         {
             "type": "text",
             "text": (
                 "Briefly describe the visible basketball action in this short live window. "
+                "Focus on what players and gameplay are doing: ball-handler/body movement, offensive spacing, "
+                "defensive coverage, screens, passes, drives, shots, rebounds, or resets. "
                 "Do not name a player or scoring result unless clearly visible. "
-                'Return JSON: {"summary": string max 18 words, "confidence": number 0-1}.'
+                "Classify action_level as high for shots/drives/loose balls/fast breaks, medium for normal "
+                "half-court movement or screening, and low for resets, standing, walking, dead-ball, or sparse action. "
+                'Return JSON: {"summary": string max 22 words, "confidence": number 0-1, '
+                '"action_level": "high"|"medium"|"low"}.'
             ),
         }
     ]
@@ -385,7 +461,14 @@ async def live_vision_summary(video_path: str, t0: float, t1: float) -> tuple[st
         max_tokens=100,
     )
     data = json.loads(resp.choices[0].message.content or "{}")
-    return str(data.get("summary") or "the possession continues.").strip(), float(data.get("confidence") or 0.4)
+    action_level = str(data.get("action_level") or "medium").strip().lower()
+    if action_level not in {"high", "medium", "low"}:
+        action_level = "medium"
+    return (
+        str(data.get("summary") or "the possession continues.").strip(),
+        float(data.get("confidence") or 0.4),
+        action_level,
+    )
 
 
 def _latency_ms(started_at: float | None, replay_time_sec: float, replay_speed: float) -> int:
