@@ -1,137 +1,160 @@
 import { useState, useCallback } from "react";
 import { Link } from "react-router-dom";
+import { ArrowUpRight } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import UploadZone from "@/components/UploadZone";
 import ProcessingStatus, { type ProcessingStep } from "@/components/ProcessingStatus";
 import ResultsPanel from "@/components/ResultsPanel";
 import { runAnalysisPipeline, type AnalysisResult } from "@/lib/analysis";
+import { Masthead, Rule } from "@/components/almanac";
+import { usePersistentState } from "@/hooks/usePersistentState";
+
+interface OfflineAnalysisState {
+  step: ProcessingStep | null;
+  error?: string;
+  clipId?: string;
+  fileUrl?: string;
+  result?: AnalysisResult;
+}
+
+const initialOfflineState: OfflineAnalysisState = {
+  step: null,
+};
 
 const Index = () => {
-  const [step, setStep] = useState<ProcessingStep | null>(null);
-  const [error, setError] = useState<string>();
-  const [clipId, setClipId] = useState<string>();
-  const [fileUrl, setFileUrl] = useState<string>();
-  const [result, setResult] = useState<AnalysisResult>();
+  const [analysisState, setAnalysisState, clearAnalysisState] = usePersistentState(
+    "vision2voice.offlineAnalysis.v1",
+    initialOfflineState,
+  );
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const { step, error, clipId, fileUrl, result } = analysisState;
 
   const processVideo = useCallback(async (file: File) => {
-    setError(undefined);
-    setResult(undefined);
-    setStep("uploading");
+    setAnalysisState({ step: "uploading" });
 
     try {
-      // 1. Upload to storage
       const fileName = `${Date.now()}_${file.name}`;
       const { error: uploadError } = await supabase.storage
         .from("videos")
         .upload(fileName, file);
-
       if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`);
 
       const { data: urlData } = supabase.storage
         .from("videos")
         .getPublicUrl(fileName);
-
       const publicUrl = urlData.publicUrl;
 
-      // 2. Create clip record
-      setStep("processing");
+      setAnalysisState({ step: "processing" });
       const { data: clip, error: clipError } = await supabase
         .from("clips")
         .insert({ title: file.name, file_url: publicUrl })
         .select()
         .single();
-
       if (clipError || !clip) throw new Error("Failed to save clip record");
 
-      setClipId(clip.id);
-      setFileUrl(publicUrl);
+      setAnalysisState({ step: "processing", clipId: clip.id, fileUrl: publicUrl });
 
-      // 3. Simulate progress steps while calling backend
-      setStep("detecting");
+      setAnalysisState({ step: "detecting", clipId: clip.id, fileUrl: publicUrl });
       await delay(800);
-      setStep("retrieving");
+      setAnalysisState({ step: "retrieving", clipId: clip.id, fileUrl: publicUrl });
       await delay(600);
-      setStep("generating");
+      setAnalysisState({ step: "generating", clipId: clip.id, fileUrl: publicUrl });
 
-      // 4. Edge Function or direct FastAPI (see VITE_BACKEND_URL)
       const payload = await runAnalysisPipeline(clip.id, publicUrl);
-      setResult(payload);
-      setStep("complete");
+      setAnalysisState({ step: "complete", clipId: clip.id, fileUrl: publicUrl, result: payload });
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-      setStep("error");
+      setAnalysisState((current) => ({
+        ...current,
+        error: err instanceof Error ? err.message : "Something went wrong",
+        step: "error",
+      }));
     }
-  }, []);
+  }, [setAnalysisState]);
 
   const handleRegenerate = useCallback(async () => {
     if (!clipId || !fileUrl) return;
     setIsRegenerating(true);
     try {
       const payload = await runAnalysisPipeline(clipId, fileUrl, "regenerate");
-      setResult(payload);
+      setAnalysisState((current) => ({ ...current, result: payload, step: "complete" }));
     } catch {
       // keep existing result
     } finally {
       setIsRegenerating(false);
     }
-  }, [clipId, fileUrl]);
+  }, [clipId, fileUrl, setAnalysisState]);
+
+  const reset = () => {
+    clearAnalysisState();
+  };
 
   const isProcessing = !!step && step !== "complete" && step !== "error";
 
   return (
-    <div className="min-h-screen bg-background px-4 py-8 sm:px-6 lg:px-8">
-      {/* Header */}
-      <header className="mb-12 text-center">
-        <h1 className="font-display text-5xl font-bold tracking-tight text-foreground sm:text-6xl">
-          Vision<span className="text-primary">2</span>Voice
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Upload a basketball clip · Get instant AI commentary
-        </p>
-        <Link
-          to="/live"
-          className="mt-4 inline-flex rounded-full border border-primary/40 bg-primary/10 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/15"
-        >
-          Open Live Replay Desk
-        </Link>
-      </header>
+    <div className="min-h-screen bg-background text-foreground">
+      <Masthead breadcrumb="00 / DESK" />
 
-      {/* Upload Zone */}
-      <UploadZone onFileSelect={processVideo} isProcessing={isProcessing || !!result} />
-
-      {/* Processing Status */}
-      {step && step !== "complete" && (
-        <ProcessingStatus currentStep={step} error={error} />
-      )}
-
-      {/* Results */}
-      {result && clipId && fileUrl && (
-        <ResultsPanel
-          clipId={clipId}
-          fileUrl={fileUrl}
-          result={result}
-          onRegenerate={handleRegenerate}
-          isRegenerating={isRegenerating}
-        />
-      )}
-
-      {/* Reset button when results are shown */}
-      {result && (
-        <div className="mt-4 text-center">
-          <button
-            onClick={() => {
-              setStep(null);
-              setResult(undefined);
-              setClipId(undefined);
-              setFileUrl(undefined);
-            }}
-            className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+      <main className="mx-auto w-full max-w-[1400px] px-6 pb-24 pt-10 sm:px-10">
+        {/* Hero */}
+        <section className="grid gap-10 lg:grid-cols-[1fr_auto] lg:items-end">
+          <div>
+            <h1 className="font-display text-[88px] leading-[0.82] sm:text-[128px] md:text-[180px]">
+              ANALYZE
+              <br />
+              <span className="text-court">THE PLAY.</span>
+            </h1>
+          </div>
+          <Link
+            to="/live"
+            className="group inline-flex items-center gap-3 self-start border border-foreground/40 px-5 py-3 font-mono text-[11px] uppercase tracked tabular text-foreground transition-colors hover:bg-foreground hover:text-background lg:self-end"
           >
-            Upload another clip
-          </button>
-        </div>
-      )}
+            <span className="h-2 w-2 animate-live-blink bg-court" aria-hidden />
+            <span>LIVE REPLAY DESK</span>
+            <ArrowUpRight className="h-3.5 w-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+          </Link>
+        </section>
+
+        {/* Upload */}
+        <section className="mt-16">
+          <Rule label="01 / UPLOAD" marker="DROP AREA" />
+          <div className="mt-6">
+            <UploadZone onFileSelect={processVideo} isProcessing={isProcessing || !!result} />
+          </div>
+        </section>
+
+        {/* Processing */}
+        {step && step !== "complete" && (
+          <section className="mt-12">
+            <Rule label="01·B / PROCESSING" marker="PIPELINE" />
+            <ProcessingStatus currentStep={step} error={error} />
+          </section>
+        )}
+
+        {/* Results */}
+        {result && clipId && fileUrl && (
+          <section className="mt-16">
+            <ResultsPanel
+              clipId={clipId}
+              fileUrl={fileUrl}
+              result={result}
+              onRegenerate={handleRegenerate}
+              isRegenerating={isRegenerating}
+            />
+          </section>
+        )}
+
+        {result && (
+          <div className="mt-16 flex items-center gap-4 border-t border-foreground/40 pt-6">
+            <button
+              type="button"
+              onClick={reset}
+              className="font-mono text-[11px] uppercase tracked tabular text-foreground underline decoration-court decoration-2 underline-offset-[6px] transition-opacity hover:opacity-70"
+            >
+              FILE A NEW CLIP →
+            </button>
+          </div>
+        )}
+      </main>
     </div>
   );
 };

@@ -31,6 +31,8 @@ Browser (React + Vite)
 Path [A] is used when `VITE_BACKEND_URL` is set. Path [B] when it is omitted.
 ```
 
+For detailed maintainer documentation, see [`docs/`](./docs/README.md).
+
 ---
 
 ## Tech stack

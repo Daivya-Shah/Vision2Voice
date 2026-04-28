@@ -1,10 +1,12 @@
-import { Copy, Download, Loader2, Mic, RefreshCw, Save, Star } from "lucide-react";
-import { useEffect, useState, type SyntheticEvent } from "react";
+import { Copy, Download, Loader2, Mic, RefreshCw, Save } from "lucide-react";
+import { useEffect, useMemo, useState, type SyntheticEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import { DataTable, Marker, Rule, Stage } from "@/components/almanac";
 
 import {
   exportCommentaryVideo,
@@ -31,8 +33,7 @@ interface ResultsPanelProps {
   isRegenerating: boolean;
 }
 
-const confidenceColor = (c: number) =>
-  c >= 0.8 ? "text-primary" : c >= 0.5 ? "text-accent" : "text-destructive";
+const formatStatLabel = (key: string) => key.replace(/_/g, " ").toUpperCase();
 
 const RatingInput = ({
   label,
@@ -43,32 +44,26 @@ const RatingInput = ({
   value: number;
   onChange: (v: number) => void;
 }) => (
-  <div className="flex flex-col gap-1">
-    <span className="text-xs text-muted-foreground">{label}</span>
+  <div className="flex flex-col gap-2">
+    <span className="font-mono text-[10px] uppercase tracked text-foreground/55">{label}</span>
     <div className="flex gap-1">
-      {[1, 2, 3, 4, 5].map((star) => (
+      {[1, 2, 3, 4, 5].map((n) => (
         <button
-          key={star}
-          onClick={() => onChange(star)}
-          className="transition-colors"
+          key={n}
+          type="button"
+          onClick={() => onChange(n)}
+          className={cn(
+            "flex h-6 w-6 items-center justify-center border font-mono text-[11px] tabular leading-none transition-colors",
+            n <= value
+              ? "border-foreground bg-foreground text-background"
+              : "border-foreground/30 text-foreground/35 hover:border-foreground/70 hover:text-foreground",
+          )}
+          aria-label={`${label} ${n}`}
         >
-          <Star
-            className={`h-4 w-4 ${
-              star <= value
-                ? "fill-accent text-accent"
-                : "text-muted-foreground/30"
-            }`}
-          />
+          {n}
         </button>
       ))}
     </div>
-  </div>
-);
-
-const StatCard = ({ label, value }: { label: string; value: string | number }) => (
-  <div className="rounded-lg bg-secondary/50 px-3 py-2">
-    <p className="text-xs text-muted-foreground">{label}</p>
-    <p className="font-display text-sm font-semibold text-foreground">{String(value)}</p>
   </div>
 );
 
@@ -140,7 +135,7 @@ const ResultsPanel = ({
       if (voiceoverUrl) URL.revokeObjectURL(voiceoverUrl);
       setVoiceoverUrl(url);
       setVideoTab("voiceover");
-      toast.success("Voiceover video ready — switch to the Voiceover tab to play or download.");
+      toast.success("Voiceover ready — switch to the voiceover tab.");
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Voiceover export failed");
     } finally {
@@ -158,7 +153,7 @@ const ResultsPanel = ({
 
   const handleCopy = () => {
     navigator.clipboard.writeText(result.commentary_text);
-    toast.success("Commentary copied to clipboard");
+    toast.success("Commentary copied");
   };
 
   const handleSave = async () => {
@@ -172,7 +167,7 @@ const ResultsPanel = ({
         notes: notes || null,
       });
       if (error) throw error;
-      toast.success("Evaluation saved");
+      toast.success("Evaluation logged");
     } catch {
       toast.error("Failed to save evaluation");
     } finally {
@@ -183,227 +178,255 @@ const ResultsPanel = ({
   const playerStats = result.retrieved_context?.player_stats;
   const teamStats = result.retrieved_context?.team_stats;
 
+  type StatRow = { metric: string; value: string | number };
+  const playerRows: StatRow[] = useMemo(
+    () =>
+      playerStats
+        ? Object.entries(playerStats)
+            .map(([k, v]) => ({ metric: formatStatLabel(k), value: v as string | number }))
+            .sort((a, b) => a.metric.localeCompare(b.metric))
+        : [],
+    [playerStats],
+  );
+  const teamRows: StatRow[] = useMemo(
+    () =>
+      teamStats
+        ? Object.entries(teamStats)
+            .map(([k, v]) => ({ metric: formatStatLabel(k), value: v as string | number }))
+            .sort((a, b) => a.metric.localeCompare(b.metric))
+        : [],
+    [teamStats],
+  );
+
+  const confidencePct = (result.confidence * 100).toFixed(1);
+  const shortClipId = clipId.slice(0, 8).toUpperCase();
+
   return (
-    <div className="mx-auto max-w-4xl space-y-6 py-8">
-      {/* Video: original vs AI voiceover */}
-      <div className="glass-card overflow-hidden rounded-2xl border border-border bg-card">
-        <Tabs value={videoTab} onValueChange={(v) => setVideoTab(v as "original" | "voiceover")}>
-          <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-            <TabsList className="grid w-full max-w-md grid-cols-2 bg-secondary/50">
-              <TabsTrigger value="original">Original clip</TabsTrigger>
+    <article className="space-y-12">
+      {/* 02 — VIDEO */}
+      <section>
+        <Rule label="02 / VIDEO" marker={`CLIP ${shortClipId}`} />
+        <Tabs
+          value={videoTab}
+          onValueChange={(v) => setVideoTab(v as "original" | "voiceover")}
+          className="mt-6"
+        >
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <TabsList>
+              <TabsTrigger value="original">Original</TabsTrigger>
               <TabsTrigger value="voiceover" disabled={!voiceoverUrl}>
-                With AI voiceover
+                AI Voiceover
               </TabsTrigger>
             </TabsList>
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
+                variant="outline"
                 size="sm"
-                variant="secondary"
                 disabled={voiceoverBusy || !backendUrl}
                 onClick={handleBuildVoiceover}
-                className="border border-border"
                 title={
                   backendUrl
-                    ? "Synthesize speech and mux onto the video (uses OpenAI TTS on the server)"
-                    : "Set VITE_BACKEND_URL for voiceover"
+                    ? "Synthesize speech and mux onto the video."
+                    : "Set VITE_BACKEND_URL for voiceover."
                 }
               >
                 {voiceoverBusy ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  <Loader2 className="animate-spin" />
                 ) : (
-                  <Mic className="mr-2 h-4 w-4" />
+                  <Mic />
                 )}
-                {voiceoverBusy ? "Building…" : "Build voiceover video"}
+                {voiceoverBusy ? "Building" : "Build voiceover"}
               </Button>
               <Button
                 type="button"
+                variant="ghost"
                 size="sm"
-                variant="outline"
                 disabled={!voiceoverUrl}
                 onClick={handleDownloadVoiceover}
-                className="border-border"
               >
-                <Download className="mr-2 h-4 w-4" />
-                Download MP4
+                <Download />
+                MP4
               </Button>
             </div>
           </div>
+
           {!backendUrl && (
-            <p className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
-              Voiceover needs the Python API: set <code className="text-foreground">VITE_BACKEND_URL</code> and run{" "}
-              <code className="text-foreground">npm run dev:full</code>.
+            <p className="mt-3 font-mono text-[10px] uppercase tracked text-foreground/50">
+              VOICEOVER NEEDS THE PYTHON API · SET VITE_BACKEND_URL · RUN <span className="text-foreground">npm run dev:full</span>
             </p>
           )}
-          <TabsContent value="original" className="m-0 focus-visible:outline-none">
-            <video
-              key={fileUrl}
-              src={fileUrl}
-              controls
-              playsInline
-              className="w-full"
-              style={{ maxHeight: "480px" }}
-              onTimeUpdate={onVideoTime}
-              onSeeked={onVideoTime}
-              onLoadedMetadata={onVideoTime}
-            />
-          </TabsContent>
-          <TabsContent value="voiceover" className="m-0 focus-visible:outline-none">
-            {voiceoverUrl ? (
+
+          <TabsContent value="original" className="m-0 mt-4">
+            <Stage
+              topLeft={<Marker>FRAME · {String(Math.round(playheadNorm * 100)).padStart(2, "0")}%</Marker>}
+              topRight={<Marker tone="accent">● ANALYZING</Marker>}
+              bottomLeft={<Marker tone="muted">{displayEvent?.toUpperCase() || "EVENT"}</Marker>}
+              bottomRight={<Marker tone="muted">{displayTeam?.toUpperCase() || "—"}</Marker>}
+            >
               <video
-                key={voiceoverUrl}
-                src={voiceoverUrl}
+                key={fileUrl}
+                src={fileUrl}
                 controls
                 playsInline
-                className="w-full"
-                style={{ maxHeight: "480px" }}
+                className="absolute inset-0 h-full w-full object-contain"
                 onTimeUpdate={onVideoTime}
                 onSeeked={onVideoTime}
                 onLoadedMetadata={onVideoTime}
               />
+            </Stage>
+          </TabsContent>
+          <TabsContent value="voiceover" className="m-0 mt-4">
+            {voiceoverUrl ? (
+              <Stage
+                topLeft={<Marker tone="accent">● VOICEOVER</Marker>}
+                topRight={<Marker>{shortClipId}</Marker>}
+              >
+                <video
+                  key={voiceoverUrl}
+                  src={voiceoverUrl}
+                  controls
+                  playsInline
+                  className="absolute inset-0 h-full w-full object-contain"
+                  onTimeUpdate={onVideoTime}
+                  onSeeked={onVideoTime}
+                  onLoadedMetadata={onVideoTime}
+                />
+              </Stage>
             ) : (
-              <div className="flex min-h-[200px] items-center justify-center px-4 py-8 text-center text-sm text-muted-foreground">
-                Click &quot;Build voiceover video&quot; to generate an MP4 with AI narration.
-              </div>
+              <p className="border border-foreground/[var(--rule-alpha,0.18)] px-6 py-12 text-center font-mono text-[11px] uppercase tracked text-foreground/50">
+                — BUILD VOICEOVER TO POPULATE THIS FRAME —
+              </p>
             )}
           </TabsContent>
         </Tabs>
-      </div>
+      </section>
 
-      {/* Detection Info — updates with playhead when possession timeline exists */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="glass-card rounded-xl p-4">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Event</p>
-          <p className="font-display text-xl font-bold text-foreground">{displayEvent}</p>
-        </div>
-        <div className="glass-card rounded-xl p-4">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Player</p>
-          <p className="font-display text-xl font-bold text-foreground">{displayPlayer}</p>
-        </div>
-        <div className="glass-card rounded-xl p-4">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Team</p>
-          <p className="font-display text-xl font-bold text-foreground">{displayTeam}</p>
-        </div>
-        <div className="glass-card rounded-xl p-4">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Confidence</p>
-          <p className={`font-display text-xl font-bold ${confidenceColor(result.confidence)}`}>
-            {(result.confidence * 100).toFixed(1)}%
+      {/* 03 — METADATA */}
+      <section>
+        <Rule label="03 / READ" marker="FIG.02" />
+        <dl className="mt-6 grid grid-cols-2 gap-x-8 gap-y-3 sm:grid-cols-4">
+          <MetaCell label="EVENT" value={displayEvent} />
+          <MetaCell label="PLAYER" value={displayPlayer} />
+          <MetaCell label="TEAM" value={displayTeam} />
+          <MetaCell label="CONF" value={`${confidencePct}%`} accent />
+        </dl>
+        {result.visual_summary && (
+          <p className="mt-6 max-w-3xl border-l border-foreground/40 pl-4 font-body text-base italic leading-relaxed text-foreground/85">
+            {result.visual_summary}
           </p>
-        </div>
-      </div>
+        )}
+      </section>
 
-      {/* Visual Summary */}
-      <div className="glass-card rounded-xl p-5">
-        <p className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">
-          Visual Summary
-        </p>
-        <p className="text-sm leading-relaxed text-foreground/90">{result.visual_summary}</p>
-      </div>
-
-      {/* Retrieved Context */}
-      {(playerStats || teamStats) && (
-        <div className="grid gap-4 md:grid-cols-2">
-          {playerStats && (
-            <div className="glass-card rounded-xl p-5">
-              <p className="mb-3 text-xs uppercase tracking-wider text-muted-foreground">
-                Player Stats
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                {Object.entries(playerStats).map(([key, val]) => (
-                  <StatCard
-                    key={key}
-                    label={key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                    value={val as string | number}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-          {teamStats && (
-            <div className="glass-card rounded-xl p-5">
-              <p className="mb-3 text-xs uppercase tracking-wider text-muted-foreground">
-                Team Stats
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                {Object.entries(teamStats).map(([key, val]) => (
-                  <StatCard
-                    key={key}
-                    label={key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                    value={val as string | number}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Commentary */}
-      <div className="glass-card rounded-xl p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">
-            Generated Commentary
-          </p>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onRegenerate}
-              disabled={isRegenerating}
-              className="border-border text-muted-foreground hover:text-foreground"
-            >
-              <RefreshCw className={`mr-1 h-3 w-3 ${isRegenerating ? "animate-spin" : ""}`} />
+      {/* 04 — COMMENTARY */}
+      <section>
+        <div className="flex items-center justify-between">
+          <Rule label="04 / COMMENTARY" marker="THE CALL" className="flex-1" />
+          <div className="ml-4 flex shrink-0 gap-2">
+            <Button variant="ghost" size="sm" onClick={onRegenerate} disabled={isRegenerating}>
+              <RefreshCw className={isRegenerating ? "animate-spin" : ""} />
               Regenerate
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleCopy}
-              className="border-border text-muted-foreground hover:text-foreground"
-            >
-              <Copy className="mr-1 h-3 w-3" />
+            <Button variant="ghost" size="sm" onClick={handleCopy}>
+              <Copy />
               Copy
             </Button>
           </div>
         </div>
-        <p className="text-base leading-relaxed text-foreground/95 italic">
-          "{result.commentary_text}"
-        </p>
-        {liveLine && (
-          <p className="mt-3 border-t border-border pt-3 text-sm text-muted-foreground">
-            <span className="font-medium text-foreground">At this point in the clip: </span>
-            {liveLine}
-          </p>
-        )}
-      </div>
 
-      {/* Rating & Save */}
-      <div className="glass-card rounded-xl p-5">
-        <p className="mb-4 text-xs uppercase tracking-wider text-muted-foreground">
-          Rate This Result
-        </p>
-        <div className="flex flex-wrap gap-6">
-          <RatingInput label="Fluency" value={fluency} onChange={setFluency} />
-          <RatingInput label="Factual Accuracy" value={factual} onChange={setFactual} />
-          <RatingInput label="Commentary Style" value={style} onChange={setStyle} />
+        <blockquote className="mt-8 max-w-4xl">
+          <span className="block font-display text-court text-[80px] leading-none">&ldquo;</span>
+          <p className="mt-2 font-body text-2xl leading-[1.4] text-foreground sm:text-3xl">
+            {result.commentary_text}
+          </p>
+        </blockquote>
+
+        {liveLine && (
+          <div className="mt-6 flex max-w-3xl gap-4 border-t border-foreground/[var(--rule-alpha,0.18)] pt-4">
+            <Marker tone="muted">AT PLAYHEAD</Marker>
+            <p className="flex-1 font-body text-sm italic text-foreground/75">{liveLine}</p>
+          </div>
+        )}
+      </section>
+
+      {/* 05 — BOXSCORE */}
+      {(playerRows.length > 0 || teamRows.length > 0) && (
+        <section>
+          <Rule label="05 / BOXSCORE" marker="RETRIEVED CONTEXT" />
+          <div className="mt-6 grid gap-10 lg:grid-cols-2">
+            {playerRows.length > 0 && (
+              <DataTable
+                rows={playerRows}
+                caption={`PLAYER · ${displayPlayer?.toUpperCase() || "—"}`}
+                columns={[
+                  { key: "metric", header: "METRIC" },
+                  { key: "value", header: "VALUE", align: "right" },
+                ]}
+              />
+            )}
+            {teamRows.length > 0 && (
+              <DataTable
+                rows={teamRows}
+                caption={`TEAM · ${displayTeam?.toUpperCase() || "—"}`}
+                columns={[
+                  { key: "metric", header: "METRIC" },
+                  { key: "value", header: "VALUE", align: "right" },
+                ]}
+              />
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* 06 — RATING */}
+      <section>
+        <Rule label="06 / GRADE" marker="EVAL" />
+        <div className="mt-6 flex flex-wrap items-end gap-x-10 gap-y-6">
+          <RatingInput label="FLUENCY" value={fluency} onChange={setFluency} />
+          <RatingInput label="FACTUAL" value={factual} onChange={setFactual} />
+          <RatingInput label="STYLE" value={style} onChange={setStyle} />
         </div>
         <Textarea
-          placeholder="Additional notes (optional)..."
+          placeholder="Marginalia — what worked, what missed, what would a real broadcaster have said..."
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          className="mt-4 border-border bg-secondary/30 text-foreground placeholder:text-muted-foreground"
+          className="mt-6"
         />
-        <Button
-          onClick={handleSave}
-          disabled={saving || (fluency === 0 && factual === 0 && style === 0)}
-          className="mt-3 bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <Save className="mr-2 h-4 w-4" />
-          {saving ? "Saving..." : "Save Evaluation"}
-        </Button>
-      </div>
-    </div>
+        <div className="mt-4">
+          <Button
+            variant="default"
+            onClick={handleSave}
+            disabled={saving || (fluency === 0 && factual === 0 && style === 0)}
+          >
+            <Save />
+            {saving ? "Logging" : "Log evaluation"}
+          </Button>
+        </div>
+      </section>
+    </article>
   );
 };
+
+const MetaCell = ({
+  label,
+  value,
+  accent = false,
+}: {
+  label: string;
+  value?: string | number | null;
+  accent?: boolean;
+}) => (
+  <div className="border-t border-foreground/40 pt-3">
+    <dt className="font-mono text-[10px] uppercase tracked text-foreground/55">{label}</dt>
+    <dd
+      className={cn(
+        "mt-1 font-display text-2xl leading-none sm:text-3xl",
+        accent ? "text-court" : "text-foreground",
+      )}
+    >
+      {value ?? "—"}
+    </dd>
+  </div>
+);
 
 export default ResultsPanel;

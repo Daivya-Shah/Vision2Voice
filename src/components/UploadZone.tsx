@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
-import { Upload, Film } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Marker } from "@/components/almanac";
 
 interface UploadZoneProps {
   onFileSelect: (file: File) => void;
@@ -8,6 +9,7 @@ interface UploadZoneProps {
 
 const UploadZone = ({ onFileSelect, isProcessing }: UploadZoneProps) => {
   const [isDragOver, setIsDragOver] = useState(false);
+  const [hover, setHover] = useState(false);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -18,7 +20,7 @@ const UploadZone = ({ onFileSelect, isProcessing }: UploadZoneProps) => {
         onFileSelect(file);
       }
     },
-    [onFileSelect]
+    [onFileSelect],
   );
 
   const handleFileInput = useCallback(
@@ -26,18 +28,23 @@ const UploadZone = ({ onFileSelect, isProcessing }: UploadZoneProps) => {
       const file = e.target.files?.[0];
       if (file) onFileSelect(file);
     },
-    [onFileSelect]
+    [onFileSelect],
   );
 
   if (isProcessing) return null;
 
   return (
     <div
-      className={`relative mx-auto max-w-2xl rounded-2xl border-2 border-dashed p-16 text-center transition-all duration-300 cursor-pointer ${
+      className={cn(
+        "group relative w-full cursor-pointer select-none border bg-transparent transition-colors",
         isDragOver
-          ? "border-primary bg-primary/5 glow-primary"
-          : "border-border hover:border-primary/50 hover:bg-card/50"
-      }`}
+          ? "border-court bg-court/5"
+          : hover
+            ? "border-foreground"
+            : "border-foreground/40",
+      )}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       onDragOver={(e) => {
         e.preventDefault();
         setIsDragOver(true);
@@ -53,22 +60,31 @@ const UploadZone = ({ onFileSelect, isProcessing }: UploadZoneProps) => {
         className="hidden"
         onChange={handleFileInput}
       />
-      <div className="flex flex-col items-center gap-4">
-        <div className="rounded-2xl bg-primary/10 p-5">
-          {isDragOver ? (
-            <Film className="h-12 w-12 text-primary" />
-          ) : (
-            <Upload className="h-12 w-12 text-primary" />
-          )}
-        </div>
-        <div>
-          <p className="font-display text-2xl font-bold text-foreground">
-            Drop your basketball clip here
-          </p>
-          <p className="mt-2 text-sm text-muted-foreground">
-            MP4 files supported · Drag & drop or click to browse
-          </p>
-        </div>
+
+      <div className="absolute left-3 top-3">
+        <Marker tone={isDragOver ? "accent" : "muted"}>FIG.01 / DROP CLIP</Marker>
+      </div>
+      <div className="absolute right-3 top-3">
+        <Marker tone="muted">MP4 · MOV · WEBM</Marker>
+      </div>
+      <div className="absolute bottom-3 left-3">
+        <Marker tone="muted">{isDragOver ? "› RELEASE TO COMMIT" : "CLICK OR DRAG"}</Marker>
+      </div>
+      <div className="absolute bottom-3 right-3">
+        <Marker tone="muted">REC ●</Marker>
+      </div>
+
+      <div className="flex min-h-[320px] flex-col items-center justify-center gap-6 px-6 py-20 text-center">
+        <p className="font-display text-[64px] leading-[0.85] text-foreground sm:text-[88px] md:text-[112px]">
+          DROP THE
+          <br />
+          <span className={cn("transition-colors", isDragOver ? "text-court" : "text-foreground")}>
+            CLIP
+          </span>
+        </p>
+        <p className="max-w-md font-body text-sm italic text-foreground/60">
+          A single basketball play. The desk will read it, retrieve the box score, and write the call.
+        </p>
       </div>
     </div>
   );
